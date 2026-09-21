@@ -1,4 +1,5 @@
-# Same gates as the pre-commit hook, because --no-verify exists.
+# Same gates as the pre-commit hook, because --no-verify exists, plus a
+# secret scan over the whole history that the hook does not perform.
 # Everything pinned: actions by commit SHA, tools and charts by exact version.
 name: ci
 on:
@@ -15,6 +16,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The pre-commit hook greps four credential patterns in the staged diff.
+  # Gitleaks applies its full rule set to every commit already in the history.
+  secrets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # gitleaks git reads commits, and a shallow clone has only one.
+          fetch-depth: 0
+
+      - name: gitleaks
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks git . --redact --no-banner
+
   manifests:
     runs-on: ubuntu-latest
     timeout-minutes: 10
