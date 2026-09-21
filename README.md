@@ -96,7 +96,8 @@ make cluster     # k3d from k3d/otel-lab.yaml: pinned k3s image, fixed API port
 make argocd      # Argo CD v3.5.3, server-side apply
 make bootstrap   # apply the root Application; Argo CD does the rest
 make smoke       # inject N logs at the OTLP endpoint, count them in VictoriaLogs
-make reset       # clean slate, CRDs included
+make reset       # empty the cluster, CRDs included, and let Argo CD rebuild it
+make clean       # delete the cluster itself
 ```
 
 Both hand-typed targets are idempotent: a second `make argocd` prints

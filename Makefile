@@ -12,7 +12,7 @@ LOGS        ?= 500
 
 SHELL := /bin/bash
 .ONESHELL:
-.PHONY: cluster argocd dev bootstrap smoke reset
+.PHONY: cluster argocd dev bootstrap smoke reset clean
 
 ## The cluster itself. First of the two commands typed on a bare machine.
 cluster:
@@ -82,3 +82,11 @@ reset:
 	kubectl delete ns kafka otel logs --ignore-not-found
 	kubectl delete crd -l app=strimzi --ignore-not-found
 	kubectl get crd | grep -c strimzi || echo "0 strimzi CRD left"
+
+## Delete the cluster and whatever `dev` left behind. The counterpart of `cluster`.
+clean:
+	set -euo pipefail
+	# Exits 0 and prints `nothing to delete` when the cluster is already gone.
+	k3d cluster delete --config k3d/otel-lab.yaml
+	[ -f $(DAEMON_PID) ] && kill "$$(cat $(DAEMON_PID))" 2>/dev/null || true
+	rm -rf $(MIRROR_DIR) $(DAEMON_PID)
