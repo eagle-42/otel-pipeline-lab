@@ -1,7 +1,8 @@
 # otel-pipeline-lab
 
-A log pipeline for Kubernetes, reconciled entirely by Argo CD, built to be operated
-rather than demoed: every design choice below is one someone can be questioned about.
+A Kubernetes log pipeline reconciled by Argo CD: OpenTelemetry collectors on both
+sides of a Kafka buffer, VictoriaLogs as the backend. Two commands are typed on a
+bare machine, everything after them comes from this repository.
 
 ```
   in-cluster workloads                                    (M1)
@@ -10,7 +11,7 @@ rather than demoed: every design choice below is one someone can be questioned a
   agent  (daemonset: filelog, kubeletstats, k8sattributes) (M1)
           |  OTLP/gRPC
           v
-  gateway (deployment: otlp in, kafka out)                 <-- M2
+  gateway (deployment: otlp in, kafka out)                 (M2)
           |
           v
   Kafka   topic otel-logs, 3 partitions, RF 3, min.insync 2
@@ -27,51 +28,48 @@ Argo CD is the only way in. One `Application` is applied by hand
 (`gitops/bootstrap/root.yaml`); it reconciles the ones under `gitops/apps/`, which
 reconcile everything else.
 
-## Why Kafka is here
+## Why Kafka is in the chain
 
-Functionally it is not needed. VictoriaLogs ingests OTLP directly, and the pipeline
-works without a broker. Kafka is in the chain for two operational gestures that
-cannot be shown without it:
+VictoriaLogs ingests OTLP directly, so the pipeline runs without a broker. Kafka is
+here for two operations that require one:
 
-1. **A buffer that survives a backend outage.** Scale VictoriaLogs to zero, keep
-   writing logs, bring it back without touching the consumer: nothing is lost and the
-   lag drains on its own. Measured: 500 injected, 500 returned by LogsQL, lag back to 0.
-2. **Consumer lag as an alerting signal**, which is the one runbook entry that tells a
-   story across several components instead of a single failing pod.
+1. **Buffering across a backend outage.** VictoriaLogs scaled to zero, logs still
+   written, then scaled back up without touching the consumer. Measured: 500 injected,
+   500 returned by LogsQL, consumer lag back to 0.
+2. **Consumer lag as an alerting signal.** The lag covers the whole chain: it rises
+   when the consumer, the backend or the network between them fails, which makes it
+   one alert with a runbook entry that spans several components.
 
-The volume of this lab does not justify a three-node Kafka cluster and nothing here
-pretends otherwise. Presented as a technical necessity it would not survive the first
-"what throughput?"; presented as a deliberate choice, it shows what the cost is.
+The traffic in this lab is a few hundred logs per run, well below what a three-node
+Kafka cluster is for. The size is here to make the replication behaviour observable,
+and the cost of that choice is three extra pods.
 
-## Why three combined nodes
+## Kafka node layout
 
 The three KRaft nodes carry both roles, `controller` and `broker`, in a single
-`KafkaNodePool`. The Strimzi documentation reserves combined nodes for development and
-testing and expects a production cluster to separate controllers from brokers.
+`KafkaNodePool`. Strimzi documents combined nodes as a development and testing
+configuration and expects production clusters to separate the two roles.
 
-This lab keeps them combined on purpose: separating them costs six pods instead of
-three for exactly the same demonstration — an in-sync replica set that shrinks when a
-broker dies, and rebuilds when it comes back. The behaviour under test is replication,
-and replication does not change with the split. Same reasoning as Kafka itself: a
-choice that is stated, not a constraint that is invented.
+They stay combined here because the behaviour under test is replication: an in-sync
+replica set that shrinks when a broker dies and rebuilds when it comes back.
+Separating the roles costs six pods for the same observation.
 
-## The two settings that make the buffer real
+## The two consumer settings
 
-Neither is a default, and only one of them is not enough.
-Both live in `gitops/manifests/otel/consumer.yaml`.
+Both live in `gitops/manifests/otel/consumer.yaml`, and the pipeline needs both.
 
-- `message_marking: {after: true, on_error: false}` — by default the Kafka receiver
-  commits the offset *before* the pipeline has succeeded. A backend outage then loses
-  the data while the consumer lag stays at zero: the failure looks like health.
-- `error_backoff: {enabled: true, ...}` — with `message_marking` alone the receiver
-  pauses the partition on the first error and never resumes without a rebalance, so
-  the data is kept but the pipeline stays stuck until someone restarts the consumer.
-  The backoff turns the pause into a retry, and the recovery becomes automatic.
+- `message_marking: {after: true, on_error: false}`. By default the Kafka receiver
+  commits the offset before the pipeline has succeeded. During a backend outage the
+  data is then lost while the consumer lag stays at zero.
+- `error_backoff: {enabled: true, ...}`. With `message_marking` alone, the receiver
+  pauses the partition on the first error and resumes only after a rebalance: the data
+  is kept, and the pipeline stays stuck until someone restarts the consumer. The
+  backoff turns the pause into a retry.
 
-No encoding is configured anywhere. The Kafka exporter and the Kafka receiver both
-default to `otlp_proto`, which carries the OTLP structure and the Kubernetes resource
-attributes through the broker untouched. Setting `raw` on the exporter, or `json` on
-the receiver, silently flattens them.
+No encoding is set anywhere. The Kafka exporter and the Kafka receiver both default to
+`otlp_proto`, which carries the OTLP structure and the Kubernetes resource attributes
+through the broker. Setting `raw` on the exporter, or `json` on the receiver, flattens
+them without an error.
 
 ## Versions
 
@@ -85,30 +83,40 @@ the receiver, silently flattens them.
 | VictoriaLogs (chart `victoria-logs-single` 0.13.9) | v1.52.0 |
 
 Strimzi 1.2.0 serves `kafka.strimzi.io/v1` only. Examples written for `v1beta2` fail
-with `no matches for kind "Kafka" ... ensure CRDs are installed first`, which blames a
-missing CRD for what is a version mismatch.
+with `no matches for kind "Kafka" ... ensure CRDs are installed first`, which reports
+a missing CRD for what is a version mismatch.
 
 ## Run it
 
+Argo CD cannot install itself, so two commands are typed on a bare machine. Everything
+after them is reconciled from this repository.
+
 ```sh
+make cluster     # k3d from k3d/otel-lab.yaml: pinned k3s image, fixed API port
+make argocd      # Argo CD v3.5.3, server-side apply
 make bootstrap   # apply the root Application; Argo CD does the rest
 make smoke       # inject N logs at the OTLP endpoint, count them in VictoriaLogs
 make reset       # clean slate, CRDs included
 ```
 
-`make dev` replaces `make bootstrap` while the repository has not been pushed: it
-serves a local mirror to the cluster over a git daemon bound to the cluster bridge.
+Both hand-typed targets are idempotent: a second `make argocd` prints
+`namespace/argocd unchanged` and exits 0. The k3s image and the API port are pinned in
+`k3d/otel-lab.yaml`, so a clone gets the cluster these measurements were taken on.
 
-`make smoke` is only useful if it can fail, so it was made to. With the Argo CD
-application controller stopped, so that nothing heals the damage, scaling the consumer
-to zero gives `injected=100 found=0` and a non-zero exit.
+`make smoke` fails when the chain is broken. With the Argo CD application controller
+stopped so that nothing heals the damage, scaling the consumer to zero gives
+`injected=100 found=0` and a non-zero exit.
+
+`make dev` serves a mirror of this repository to the cluster over a git daemon bound
+to the cluster bridge, for changes that have not been pushed yet.
 
 ## Milestones
 
 | | | |
 |---|---|---|
+| M0 | Cluster config and bootstrap targets in git | done |
 | M1 | Collector agent and gateway, `make smoke` | in progress |
-| M2 | Kafka buffer, consumer, VictoriaLogs | this commit |
+| M2 | Kafka buffer, consumer, VictoriaLogs | done |
 | M3 | kube-prometheus-stack, two alerts | |
 | M4 | `mep/` and `runbook/`, fluentd to otel migration on a non-cluster host | |
 | M5 | Scheduled jobs | |

@@ -1,5 +1,5 @@
 # otel-pipeline-lab
-# M2: the Kafka buffer and the log backend, reconciled by Argo CD.
+# Bootstrap the cluster and Argo CD by hand; everything after that is reconciled from git.
 
 CLUSTER     ?= otel-lab
 REPO_URL    ?= https://github.com/eagle-42/otel-pipeline-lab.git
@@ -51,12 +51,12 @@ dev:
 bootstrap:
 	kubectl apply -f gitops/bootstrap/root.yaml
 
-## A log written at the OTLP endpoint must come out of VictoriaLogs. Nothing else proves the chain.
+## A log written at the OTLP endpoint must come out of VictoriaLogs.
 smoke:
 	set -euo pipefail
 	stamp=smoke-$$(date +%s)
 	kubectl -n otel delete job telemetrygen --ignore-not-found >/dev/null
-	# --rate 0 or telemetrygen emits one log per second and looks like a stuck pipeline.
+	# --rate 0, or telemetrygen emits one log per second and the job runs for $(LOGS) seconds.
 	kubectl -n otel create job telemetrygen --image=$(TELEMETRYGEN) -- \
 	  /telemetrygen logs --otlp-endpoint gateway.otel.svc:4317 --otlp-insecure \
 	  --logs $(LOGS) --rate 0 --body "$$stamp"

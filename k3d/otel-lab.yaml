@@ -12,7 +12,7 @@ servers: 1
 agents: 2
 
 # Pinned. k3d 5.9.0 defaults to k3s v1.35.5, two minor versions behind the kubectl
-# used here (1.37.0) — outside the supported skew.
+# used here (1.37.0), outside the supported skew.
 image: rancher/k3s:v1.37.0-k3s1
 
 kubeAPI:

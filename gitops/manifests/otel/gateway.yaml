@@ -1,4 +1,4 @@
-# OTLP in, Kafka out. No encoding is set on purpose: the Kafka exporter and the
+# OTLP in, Kafka out. No encoding is set here: the Kafka exporter and the
 # Kafka receiver both default to otlp_proto, so the OTLP structure and the k8s
 # resource attributes survive the round trip with zero configuration.
 # `raw` would drop every attribute but the body; do not set it.
