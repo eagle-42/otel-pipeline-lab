@@ -6,12 +6,27 @@ REPO_URL    ?= https://github.com/eagle-42/otel-pipeline-lab.git
 MIRROR_DIR  ?= /tmp/otel-lab-mirror
 MIRROR_URL  ?= git://host.k3d.internal/otel-pipeline-lab
 DAEMON_PID  ?= /tmp/otel-lab-git-daemon.pid
+ARGOCD_VER  ?= v3.5.3
 TELEMETRYGEN ?= ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.161.0
 LOGS        ?= 500
 
 SHELL := /bin/bash
 .ONESHELL:
-.PHONY: dev bootstrap smoke reset
+.PHONY: cluster argocd dev bootstrap smoke reset
+
+## The cluster itself. First of the two commands typed on a bare machine.
+cluster:
+	k3d cluster create --config k3d/otel-lab.yaml
+
+## Argo CD cannot be reconciled by Argo CD. Second and last command typed by hand.
+argocd:
+	set -euo pipefail
+	# install.yaml carries no Namespace object, and a plain `create` fails the second time.
+	kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+	kubectl apply -n argocd --server-side --force-conflicts \
+	  -f https://raw.githubusercontent.com/argoproj/argo-cd/$(ARGOCD_VER)/manifests/install.yaml
+	# Without this, `bootstrap` right after would apply against an API that is not serving yet.
+	kubectl -n argocd rollout status deploy/argocd-server --timeout=300s
 
 ## Serve this repository to the cluster and point Argo CD at it.
 ## Only needed while the repository has not been pushed yet; after that, `bootstrap`.

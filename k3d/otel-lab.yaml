@@ -1,0 +1,31 @@
+# Bootstrap the local lab cluster: k3d cluster create --config k3d/otel-lab.yaml
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+
+metadata:
+  name: otel-lab
+
+servers: 1
+
+# Two agents, not zero: the log collector runs as a DaemonSet and reads node-local
+# files. A single-node cluster would make `make smoke` prove nothing.
+agents: 2
+
+# Pinned. k3d 5.9.0 defaults to k3s v1.35.5, two minor versions behind the kubectl
+# used here (1.37.0) — outside the supported skew.
+image: rancher/k3s:v1.37.0-k3s1
+
+kubeAPI:
+  hostIP: "127.0.0.1"
+  # Fixed, so the kubeconfig is reproducible. k3d picks a random host port otherwise.
+  hostPort: "6443"
+
+options:
+  k3d:
+    # A create that aborts halfway leaves a broken load balancer behind and says
+    # nothing. Wait for the final "Cluster created successfully!" line.
+    wait: true
+    timeout: "300s"
+  kubeconfig:
+    updateDefaultKubeconfig: true
+    switchCurrentContext: true
