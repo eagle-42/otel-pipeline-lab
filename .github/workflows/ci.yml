@@ -5,6 +5,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -51,3 +52,61 @@ jobs:
           helm template vlogs vm/victoria-logs-single --version 0.13.9 > /tmp/vlogs.yaml
           # helm template drops CRDs without --include-crds, with no warning and rc=0.
           test "$(grep -c '^kind: CustomResourceDefinition' /tmp/strimzi.yaml)" -eq 10
+
+  # kubeconform validates shapes. This job runs the pipeline and reads a log back
+  # out of it, which is the only check that covers the chain end to end.
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # `make dev` clones the working tree, and a pull_request checkout is a detached
+    # merge commit with no branch to clone.
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: install k3d and kubectl
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors \
+            https://github.com/k3d-io/k3d/releases/download/v5.9.0/k3d-linux-amd64 \
+            -o /usr/local/bin/k3d
+          curl -fsSL --retry 5 --retry-all-errors \
+            https://dl.k8s.io/release/v1.37.0/bin/linux/amd64/kubectl \
+            -o /usr/local/bin/kubectl
+          chmod +x /usr/local/bin/k3d /usr/local/bin/kubectl
+
+      - name: cluster
+        run: make cluster
+
+      - name: argo cd
+        run: make argocd
+
+      - name: reconcile this commit
+        run: |
+          # The mirror is built with a commit, and a runner has no git identity.
+          git config --global user.email ci@local
+          git config --global user.name ci
+          make dev
+
+      - name: wait for the four applications
+        run: |
+          for i in $(seq 1 90); do
+            ok=$(kubectl -n argocd get applications -o \
+              jsonpath='{range .items[*]}{.status.sync.status}/{.status.health.status}{"\n"}{end}' \
+              | grep -c '^Synced/Healthy$' || true)
+            [ "$ok" = 4 ] && break
+            sleep 10
+          done
+          kubectl -n argocd get applications
+          [ "$ok" = 4 ]
+
+      - name: smoke
+        run: make smoke
+
+      - name: what the cluster looked like when it failed
+        if: failure()
+        run: |
+          kubectl get pods -A
+          kubectl -n argocd get applications -o wide
+          kubectl -n kafka get kafka,kafkanodepool,kafkatopic
