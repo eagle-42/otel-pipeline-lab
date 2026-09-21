@@ -1,0 +1,2 @@
+# Public repository: the commit-msg hook would publish the very list it filters.
+.githooks/

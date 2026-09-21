@@ -1,0 +1,53 @@
+# Same gates as the pre-commit hook, because --no-verify exists.
+# Everything pinned: actions by commit SHA, tools and charts by exact version.
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  manifests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.3.0
+
+      - name: yamllint
+        run: pipx install yamllint==1.38.0 && yamllint -s .
+
+      - name: install kubeconform
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors \
+            https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz \
+            | tar -xz -C /usr/local/bin kubeconform
+
+      - name: validate plain manifests
+        run: |
+          catalog=https://raw.githubusercontent.com/datreeio/CRDs-catalog/main
+          kubeconform -strict -summary -kubernetes-version 1.37.0 \
+            -schema-location default \
+            -schema-location "$catalog/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json" \
+            gitops/bootstrap gitops/apps gitops/manifests
+
+      - name: render the pinned charts
+        run: |
+          helm repo add strimzi https://strimzi.io/charts/
+          helm repo add vm https://victoriametrics.github.io/helm-charts/
+          helm template strimzi strimzi/strimzi-kafka-operator --version 1.2.0 --include-crds > /tmp/strimzi.yaml
+          helm template vlogs vm/victoria-logs-single --version 0.13.9 > /tmp/vlogs.yaml
+          # helm template drops CRDs without --include-crds, with no warning and rc=0.
+          test "$(grep -c '^kind: CustomResourceDefinition' /tmp/strimzi.yaml)" -eq 10
