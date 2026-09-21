@@ -73,6 +73,68 @@ jobs:
           # helm template drops CRDs without --include-crds, with no warning and rc=0.
           test "$(grep -c '^kind: CustomResourceDefinition' /tmp/strimzi.yaml)" -eq 10
 
+  # kubeconform checks that an object is well formed. kube-linter checks how it
+  # behaves once admitted: root user, writable root filesystem, missing limits.
+  misconfig:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: kube-linter
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors \
+            https://github.com/stackrox/kube-linter/releases/download/v0.8.3/kube-linter-linux.tar.gz \
+            | tar -xz -C /usr/local/bin kube-linter
+          # Report first, gate second: a failing lint still has to reach the Security tab.
+          kube-linter lint gitops/ --format sarif --output kube-linter.sarif || true
+          kube-linter lint gitops/
+
+      - name: publish the findings
+        if: always()
+        uses: github/codeql-action/upload-sarif@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
+        with:
+          sarif_file: kube-linter.sarif
+          category: kube-linter
+
+  # Trivy is the usual tool here. Its v0.69.4 release and its Docker Hub images
+  # were poisoned in March 2026, so this uses Grype, maintained by Anchore.
+  images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: scan every pinned image
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors \
+            https://github.com/anchore/grype/releases/download/v0.119.0/grype_0.119.0_linux_amd64.tar.gz \
+            | tar -xz -C /usr/local/bin grype
+          mkdir -p sarif
+          grep -rhoE 'image: [^ ]+' gitops/ | awk '{print $2}' | sort -u | tee images.txt
+          rc=0
+          while read -r img; do
+            grype "$img" -o sarif --file "sarif/$(echo "$img" | tr '/:' '__').sarif" -f high || rc=1
+          done < images.txt
+          exit $rc
+
+      - name: publish the findings
+        if: always()
+        uses: github/codeql-action/upload-sarif@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
+        with:
+          sarif_file: sarif
+          category: grype
+
   # kubeconform validates shapes. This job runs the pipeline and reads a log back
   # out of it, which is the only check that covers the chain end to end.
   integration:
