@@ -1,0 +1,26 @@
+# The log backend. Release name pinned to `vlogs` because the consumer below
+# addresses the service by name.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: vlogs
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://victoriametrics.github.io/helm-charts/
+    chart: victoria-logs-single
+    targetRevision: 0.13.9
+    helm:
+      releaseName: vlogs
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: logs
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

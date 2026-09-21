@@ -1,0 +1,23 @@
+# The only object applied by hand. Everything else is reconciled from git.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: otel-pipeline-lab
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/eagle-42/otel-pipeline-lab.git
+    targetRevision: HEAD
+    path: gitops/apps
+    directory:
+      recurse: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

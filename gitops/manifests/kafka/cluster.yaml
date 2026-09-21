@@ -1,0 +1,67 @@
+# Three KRaft nodes with both roles. See README, "Why three combined nodes".
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaNodePool
+metadata:
+  name: dual
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: otel
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  replicas: 3
+  roles: [controller, broker]
+  storage:
+    type: jbod
+    volumes:
+      - id: 0
+        type: persistent-claim
+        size: 10Gi
+        deleteClaim: true
+  resources:
+    requests: {cpu: 300m, memory: 2Gi}
+    limits: {cpu: "1", memory: 2Gi}
+  jvmOptions:
+    -Xms: 1024m
+    -Xmx: 1024m
+---
+apiVersion: kafka.strimzi.io/v1
+kind: Kafka
+metadata:
+  name: otel
+  namespace: kafka
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  kafka:
+    version: 4.3.1
+    listeners:
+      - name: plain
+        port: 9092
+        type: internal
+        tls: false
+    config:
+      default.replication.factor: 3
+      min.insync.replicas: 2
+      offsets.topic.replication.factor: 3
+      transaction.state.log.replication.factor: 3
+      transaction.state.log.min.isr: 2
+    # Strimzi 1.2.0 ships its own metrics reporter: an allow list of regexes
+    # replaces the ~200 lines of JMX rules older guides still show.
+    metricsConfig:
+      type: strimziMetricsReporter
+      values:
+        allowList:
+          - "kafka_server_replicamanager.*"
+          - "kafka_controller_kafkacontroller.*"
+          - "kafka_server_brokertopicmetrics.*"
+  entityOperator:
+    topicOperator: {}
+    userOperator: {}
+  # Exposes consumer group lag, the metric the backpressure runbook entry reads.
+  kafkaExporter:
+    groupRegex: ".*"
+    topicRegex: ".*"
+    resources:
+      requests: {cpu: 100m, memory: 64Mi}
+      limits: {cpu: 500m, memory: 128Mi}

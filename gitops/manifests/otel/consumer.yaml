@@ -1,0 +1,63 @@
+# Kafka in, VictoriaLogs out. The two receiver blocks below are what makes the
+# claim "kill the backend, lose nothing" true; neither is a default.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: consumer
+  namespace: otel
+data:
+  config.yaml: |
+    receivers:
+      kafka:
+        brokers: [otel-kafka-bootstrap.kafka.svc:9092]
+        group_id: otel-consumer
+        # `topics` is plural here and singular on the exporter side.
+        logs: {topics: [otel-logs]}
+        # Default is after:false, i.e. the offset is committed before the pipeline
+        # has succeeded: a backend outage loses the data and the lag stays green.
+        message_marking: {after: true, on_error: false}
+        # message_marking alone pauses the partition on the first error and it
+        # never resumes without a rebalance. error_backoff makes the retry, and
+        # therefore the recovery, automatic. max_elapsed_time 0 = never give up.
+        error_backoff:
+          enabled: true
+          initial_interval: 1s
+          max_interval: 15s
+          max_elapsed_time: 0
+    exporters:
+      otlp_http:
+        logs_endpoint: http://vlogs-victoria-logs-single-server.logs.svc:9428/insert/opentelemetry/v1/logs
+        # An in-memory queue in front of the Kafka offset would accept the batch,
+        # report success, and let the receiver commit: exactly the loss Kafka is
+        # here to prevent. Kafka is the queue, so the exporter has none.
+        sending_queue: {enabled: false}
+        retry_on_failure: {enabled: false}
+    service:
+      telemetry:
+        metrics: {readers: [{pull: {exporter: {prometheus: {host: 0.0.0.0, port: 8888}}}}]}
+      pipelines:
+        logs: {receivers: [kafka], exporters: [otlp_http]}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: consumer
+  namespace: otel
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: consumer}}
+  template:
+    metadata:
+      labels: {app: consumer}
+    spec:
+      containers:
+        - name: otc
+          image: otel/opentelemetry-collector-contrib:0.161.0
+          args: ["--config=/etc/otc/config.yaml"]
+          ports:
+            - {name: metrics, containerPort: 8888}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          volumeMounts: [{name: cfg, mountPath: /etc/otc}]
+      volumes: [{name: cfg, configMap: {name: consumer}}]

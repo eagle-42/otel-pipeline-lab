@@ -1,0 +1,41 @@
+# Strimzi operator and the Kafka cluster it manages, in one Application.
+# Two sources, one wave ordering: the chart lands in wave 0 (default), the custom
+# resources in wave 1, so the CRDs always exist before a Kafka object is applied.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kafka
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  sources:
+    - repoURL: https://strimzi.io/charts/
+      chart: strimzi-kafka-operator
+      targetRevision: 1.2.0
+      helm:
+        releaseName: strimzi
+    - repoURL: https://github.com/eagle-42/otel-pipeline-lab.git
+      targetRevision: HEAD
+      path: gitops/manifests/kafka
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kafka
+  ignoreDifferences:
+    # The chart declares an empty `properties: {}` under status.clusterSecurity and
+    # the API server prunes it. Without this the Application stays OutOfSync forever
+    # on that single CRD, with everything else healthy. Measured 2026-09-19.
+    - group: apiextensions.k8s.io
+      kind: CustomResourceDefinition
+      name: kafkas.kafka.strimzi.io
+      jsonPointers:
+        - /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/clusterSecurity/properties
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - SkipDryRunOnMissingResource=true
+      - ServerSideApply=true

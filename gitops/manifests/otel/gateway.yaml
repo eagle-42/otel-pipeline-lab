@@ -1,0 +1,62 @@
+# OTLP in, Kafka out. No encoding is set on purpose: the Kafka exporter and the
+# Kafka receiver both default to otlp_proto, so the OTLP structure and the k8s
+# resource attributes survive the round trip with zero configuration.
+# `raw` would drop every attribute but the body; do not set it.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway
+  namespace: otel
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc: {endpoint: 0.0.0.0:4317}
+    processors:
+      batch: {}
+    exporters:
+      kafka:
+        brokers: [otel-kafka-bootstrap.kafka.svc:9092]
+        logs: {topic: otel-logs}
+    service:
+      telemetry:
+        metrics: {readers: [{pull: {exporter: {prometheus: {host: 0.0.0.0, port: 8888}}}}]}
+      pipelines:
+        logs: {receivers: [otlp], processors: [batch], exporters: [kafka]}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: otel
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: gateway}}
+  template:
+    metadata:
+      labels: {app: gateway}
+    spec:
+      containers:
+        - name: otc
+          image: otel/opentelemetry-collector-contrib:0.161.0
+          args: ["--config=/etc/otc/config.yaml"]
+          ports:
+            - {name: otlp, containerPort: 4317}
+            - {name: metrics, containerPort: 8888}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          volumeMounts: [{name: cfg, mountPath: /etc/otc}]
+      volumes: [{name: cfg, configMap: {name: gateway}}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: otel
+spec:
+  selector: {app: gateway}
+  ports:
+    - {name: otlp, port: 4317, targetPort: 4317}
+    - {name: metrics, port: 8888, targetPort: 8888}
