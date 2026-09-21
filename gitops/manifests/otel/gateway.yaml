@@ -41,6 +41,14 @@ spec:
         - name: otc
           image: otel/opentelemetry-collector-contrib:0.161.0
           args: ["--config=/etc/otc/config.yaml"]
+          # The collector reads a mounted ConfigMap and writes nothing, so it
+          # runs unprivileged on a read-only root. Checked by kube-linter.
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
           ports:
             - {name: otlp, containerPort: 4317}
             - {name: metrics, containerPort: 8888}
